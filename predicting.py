@@ -1,79 +1,115 @@
-# -------------------------------
-# Leaf Disease Prediction with GrabCut - Colab
-# -------------------------------
+# --------------------------------------------------
+# 🌿 Leaf Disease Prediction with GrabCut Segmentation
+# --------------------------------------------------
+!pip install tensorflow opencv-python pillow numpy --quiet
 
-!pip install tensorflow opencv-python --quiet
-
-import numpy as np
 import cv2
+import numpy as np
+import tensorflow as tf
 from tensorflow.keras.models import load_model
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from PIL import Image
 from google.colab import files
 import matplotlib.pyplot as plt
+import os
 
-# -------------------------------
-# Step 1: Load Trained Model
-# -------------------------------
-model = load_model("leaf_disease_model.h5")
-print("✅ Loaded leaf disease model successfully!")
+# --------------------------------------------------
+# 1) Load Trained Model
+# --------------------------------------------------
+MODEL_PATH = "leaf_disease_model_final.h5"
 
-# Class names (must match training order)
-class_names = ['appleblackrot', 'applescabe', 'cherrypowderymildew','peachbacterialspot','potatoearlyblight','potatolateblight','tomatobacterialspot','cornrust']
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"❌ Model file '{MODEL_PATH}' not found. Please upload it first!")
 
-# -------------------------------
-# Step 2: Upload a single leaf image
-# -------------------------------
-print("📤 Upload a leaf image to predict disease:")
+model = load_model(MODEL_PATH)
+print("✅ Model loaded successfully!")
+
+# --------------------------------------------------
+# 2) Define Helper Functions
+# --------------------------------------------------
+
+def grabcut_segment(image):
+    """Applies GrabCut to isolate the leaf from the background."""
+    mask = np.zeros(image.shape[:2], np.uint8)
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
+
+    # Define a rectangle around the center region (where the leaf usually is)
+    height, width = image.shape[:2]
+    rect = (int(width * 0.05), int(height * 0.05),
+            int(width * 0.9), int(height * 0.9))
+
+    # Apply GrabCut
+    cv2.grabCut(image, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype("uint8")
+
+    segmented = image * mask2[:, :, np.newaxis]
+    return segmented
+
+def preprocess_leaf(image_path, img_size=224):
+    """Loads an image, applies GrabCut, preprocesses for MobileNetV2."""
+    # Load image
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError("Invalid image file!")
+
+    # Convert JFIF → RGB using PIL (OpenCV may fail to read JFIF correctly)
+    if image_path.lower().endswith(".jfif"):
+        pil_img = Image.open(image_path).convert("RGB")
+        img = np.array(pil_img)[:, :, ::-1]  # Convert RGB → BGR for OpenCV
+
+    # Resize for GrabCut performance
+    img = cv2.resize(img, (300, 300))
+
+    # Apply GrabCut segmentation
+    leaf = grabcut_segment(img)
+
+    # Resize to model input size and preprocess
+    leaf_resized = cv2.resize(leaf, (img_size, img_size))
+    leaf_array = preprocess_input(np.expand_dims(leaf_resized, axis=0).astype("float32"))
+    return leaf_array, leaf, img
+
+def display_images(original, segmented):
+    """Displays original and segmented images side-by-side."""
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+    ax[0].imshow(cv2.cvtColor(original, cv2.COLOR_BGR2RGB))
+    ax[0].set_title("Original Image")
+    ax[0].axis("off")
+
+    ax[1].imshow(cv2.cvtColor(segmented, cv2.COLOR_BGR2RGB))
+    ax[1].set_title("After GrabCut Segmentation")
+    ax[1].axis("off")
+    plt.show()
+
+# --------------------------------------------------
+# 3) Upload Image and Predict
+# --------------------------------------------------
+print("📸 Upload a leaf image (.jpg/.png/.jfif):")
 uploaded = files.upload()
-img_path = next(iter(uploaded))
+file_path = next(iter(uploaded))
 
-# -------------------------------
-# Step 3: Read Image
-# -------------------------------
-img = cv2.imread(img_path)
-if img is None:
-    raise ValueError("❌ Could not read the uploaded image.")
+# Preprocess
+input_array, segmented_leaf, original_img = preprocess_leaf(file_path)
 
-# -------------------------------
-# Step 4: Apply GrabCut for segmentation
-# -------------------------------
-mask = np.zeros(img.shape[:2], np.uint8)
-bgdModel = np.zeros((1,65), np.float64)
-fgdModel = np.zeros((1,65), np.float64)
+# Display segmentation
+display_images(original_img, segmented_leaf)
 
-# Initial rectangle around leaf (assumes leaf is roughly centered)
-height, width = img.shape[:2]
-rect = (10, 10, width-20, height-20)
+# Predict
+pred = model.predict(input_array)
+confidence = np.max(pred)
+predicted_class = np.argmax(pred)
 
-cv2.grabCut(img, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+# Try to infer class names if saved
+try:
+    with open("class_names.txt", "r") as f:
+        class_names = [line.strip() for line in f.readlines()]
+    label = class_names[predicted_class]
+except:
+    label = f"Class #{predicted_class}"
 
-# Convert mask to binary: sure and probable foreground as 1, background as 0
-mask2 = np.where((mask==2)|(mask==0), 0, 1).astype('uint8')
-img_segmented = img * mask2[:, :, np.newaxis]
-
-# -------------------------------
-# Step 5: Preprocess Image
-# -------------------------------
-img_size = 224
-img_rgb = cv2.cvtColor(img_segmented, cv2.COLOR_BGR2RGB)
-img_resized = cv2.resize(img_rgb, (img_size, img_size))
-img_array = np.expand_dims(img_resized, axis=0) / 255.0
-
-# -------------------------------
-# Step 6: Make Prediction
-# -------------------------------
-pred_probs = model.predict(img_array)[0]
-pred_idx = np.argmax(pred_probs)
-pred_class = class_names[pred_idx]
-confidence = pred_probs[pred_idx]
-
-# -------------------------------
-# Step 7: Display Result
-# -------------------------------
-plt.figure(figsize=(6,6))
-plt.imshow(img_rgb)
-plt.axis('off')
-plt.title(f"Prediction: {pred_class}\nConfidence: {confidence*100:.2f}%", fontsize=14)
-plt.show()
-
-print(f"✅ Predicted Class: {pred_class}")
-print(f"📊 Confidence: {confidence*100:.2f}%")
+# --------------------------------------------------
+# 4) Output Results
+# --------------------------------------------------
+print("\n🔍 Prediction Results:")
+print(f"Predicted Disease: {label}")
+print(f"Confidence: {confidence*100:.2f}%")
