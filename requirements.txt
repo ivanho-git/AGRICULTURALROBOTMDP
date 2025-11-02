@@ -1,0 +1,17 @@
+streamlit
+tensorflow
+torch
+torchvision
+scikit-learn
+opencv-python
+numpy
+pandas
+matplotlib
+Pillow
+requests
+openai
+plotly
+joblib
+xgboost
+scipy
+tqdm
